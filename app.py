@@ -1,6 +1,13 @@
 import requests
 import streamlit as st
+#------------------------
+import os
+import zipfile
 
+if not os.path.exists("df.pkl") and os.path.exists("df.zip"):
+    with zipfile.ZipFile("df.zip", "r") as zip_ref:
+        zip_ref.extractall(".")
+#------------------------
 # =============================
 # CONFIG
 # =============================

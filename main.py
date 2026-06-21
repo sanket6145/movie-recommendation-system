@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
+from cachetools import TTLCache
 
 
 # =========================
@@ -19,6 +20,7 @@ TMDB_API_KEY = os.getenv("TMDB_API_KEY")
 
 TMDB_BASE = "https://api.themoviedb.org/3"
 TMDB_IMG_500 = "https://image.tmdb.org/t/p/w500"
+home_cache = TTLCache(maxsize=20, ttl=3600)
 
 if not TMDB_API_KEY:
     # Don't crash import-time in production if you prefer; but for you better fail early:
@@ -322,27 +324,25 @@ async def home(
     category: str = Query("popular"),
     limit: int = Query(24, ge=1, le=50),
 ):
-    """
-    Home feed for Streamlit (posters).
-    category:
-      - trending (trending/movie/day)
-      - popular, top_rated, upcoming, now_playing  (movie/{category})
-    """
-    try:
-        if category == "trending":
-            data = await tmdb_get("/trending/movie/day", {"language": "en-US"})
-            return await tmdb_cards_from_results(data.get("results", []), limit=limit)
+    key = f"{category}_{limit}"
 
-        if category not in {"popular", "top_rated", "upcoming", "now_playing"}:
-            raise HTTPException(status_code=400, detail="Invalid category")
+    if key in home_cache:
+        return home_cache[key]
 
-        data = await tmdb_get(f"/movie/{category}", {"language": "en-US", "page": 1})
-        return await tmdb_cards_from_results(data.get("results", []), limit=limit)
+    if category == "trending":
+        data = await tmdb_get("/trending/movie/day", {"language": "en-US"})
+        result = await tmdb_cards_from_results(data.get("results", []), limit=limit)
+        home_cache[key] = result
+        return result
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Home route failed: {e}")
+    if category not in {"popular", "top_rated", "upcoming", "now_playing"}:
+        raise HTTPException(status_code=400, detail="Invalid category")
+
+    data = await tmdb_get(f"/movie/{category}", {"language": "en-US", "page": 1})
+    result = await tmdb_cards_from_results(data.get("results", []), limit=limit)
+
+    home_cache[key] = result
+    return result
 
 
 # ---------- TMDB KEYWORD SEARCH (MULTIPLE RESULTS) ----------

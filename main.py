@@ -451,26 +451,38 @@ async def search_bundle(
         tfidf_items.append(TFIDFRecItem(title=title, score=score, tmdb=card))
 
     # 2) Genre recommendations (TMDB discover by first genre)
-    genre_recs: List[TMDBMovieCard] = []
-    if details.genres:
-        genre_id = details.genres[0]["id"]
-        discover = await tmdb_get(
-            "/discover/movie",
-            {
-                "with_genres": genre_id,
-                "language": "en-US",
-                "sort_by": "popularity.desc",
-                "page": 1,
-            },
-        )
-        cards = await tmdb_cards_from_results(
-            discover.get("results", []), limit=genre_limit
-        )
-        genre_recs = [c for c in cards if c.tmdb_id != details.tmdb_id]
-
-    return SearchBundleResponse(
-        query=query,
-        movie_details=details,
-        tfidf_recommendations=tfidf_items,
-        genre_recommendations=genre_recs,
+     # 2) Genre recommendations (TMDB discover by first genre)
+genre_recs: List[TMDBMovieCard] = []
+if details.genres:
+    genre_id = details.genres[0]["id"]
+    discover = await tmdb_get(
+        "/discover/movie",
+        {
+            "with_genres": genre_id,
+            "language": "en-US",
+            "sort_by": "popularity.desc",
+            "page": 1,
+        },
     )
+    cards = await tmdb_cards_from_results(
+        discover.get("results", []), limit=genre_limit
+    )
+    genre_recs = [c for c in cards if c.tmdb_id != details.tmdb_id]
+
+# 👇 हे add कर
+if len(tfidf_items) == 0:
+    tfidf_items = [
+        TFIDFRecItem(
+            title=g.title,
+            score=1.0,
+            tmdb=g
+        )
+        for g in genre_recs[:12]
+    ]
+
+return SearchBundleResponse(
+    query=query,
+    movie_details=details,
+    tfidf_recommendations=tfidf_items,
+    genre_recommendations=genre_recs,
+)

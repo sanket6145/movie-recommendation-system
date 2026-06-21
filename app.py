@@ -347,11 +347,21 @@ elif st.session_state.view == "details":
 
         if not err2 and bundle:
             st.markdown("#### 🔎 Similar Movies (TF-IDF)")
-            poster_grid(
-                to_cards_from_tfidf_items(bundle.get("tfidf_recommendations")),
-                cols=grid_cols,
-                key_prefix="details_tfidf",
-            )
+
+tfidf_cards = to_cards_from_tfidf_items(
+    bundle.get("tfidf_recommendations")
+)
+
+if tfidf_cards:
+    poster_grid(
+        tfidf_cards,
+        cols=grid_cols,
+        key_prefix="details_tfidf",
+    )
+else:
+    st.info(
+        "⚠️ TF-IDF recommendations are not available for this movie. Showing genre-based recommendations instead."
+    )
 
             st.markdown("#### 🎭 More Like This (Genre)")
             poster_grid(

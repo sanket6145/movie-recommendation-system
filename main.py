@@ -20,7 +20,8 @@ TMDB_API_KEY = os.getenv("TMDB_API_KEY")
 
 TMDB_BASE = "https://api.themoviedb.org/3"
 TMDB_IMG_500 = "https://image.tmdb.org/t/p/w500"
-home_cache = TTLCache(maxsize=20, ttl=3600)
+home_cache = TTLCache(maxsize=20, ttl=86400)
+tmdb_cache = TTLCache(maxsize=500, ttl=86400)
 
 if not TMDB_API_KEY:
     # Don't crash import-time in production if you prefer; but for you better fail early:
@@ -60,7 +61,7 @@ TITLE_TO_IDX: Optional[Dict[str, int]] = None
 
 
 # =========================
-# MODELS
+# MODELSasync def 
 # =========================
 class TMDBMovieCard(BaseModel):
     tmdb_id: int
@@ -107,38 +108,36 @@ def make_img_url(path: Optional[str]) -> Optional[str]:
 
 
 async def tmdb_get(path: str, params: Dict[str, Any]) -> Dict[str, Any]:
-
     cache_key = f"{path}_{str(params)}"
-
     if cache_key in tmdb_cache:
         return tmdb_cache[cache_key]
 
     q = dict(params)
     q["api_key"] = TMDB_API_KEY
 
-    try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            r = await client.get(f"{TMDB_BASE}{path}", params=q)
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=30.0)) as client:
+                r = await client.get(f"{TMDB_BASE}{path}", params=q)
 
-    except httpx.RequestError as e:
-        raise HTTPException(
-            status_code=502,
-            detail=f"TMDB request error: {type(e).__name__} | {repr(e)}",
-        )
+            if r.status_code == 429:  # ← हे नवीन
+                retry_after = int(r.headers.get("Retry-After", 5))
+                await asyncio.sleep(retry_after)
+                continue
 
-    if r.status_code != 200:
-        raise HTTPException(
-            status_code=502,
-            detail=f"TMDB error {r.status_code}: {r.text}"
-        )
+            if r.status_code == 200:
+                data = r.json()
+                tmdb_cache[cache_key] = data
+                return data
 
-    data = r.json()
+            raise HTTPException(status_code=502, detail=f"TMDB error {r.status_code}")
 
-    tmdb_cache[cache_key] = data
+        except httpx.TimeoutException:
+            if attempt == 2:
+                raise HTTPException(status_code=502, detail="TMDB timeout")
+            await asyncio.sleep(2 ** attempt)
 
-    return data
-
-    return r.json()
+    raise HTTPException(status_code=502, detail="TMDB unreachable")
 
 
 async def tmdb_cards_from_results(
@@ -461,37 +460,34 @@ async def search_bundle(
 
     # 2) Genre recommendations (TMDB discover by first genre)
      # 2) Genre recommendations (TMDB discover by first genre)
-genre_recs: List[TMDBMovieCard] = []
-if details.genres:
-    genre_id = details.genres[0]["id"]
-    discover = await tmdb_get(
-        "/discover/movie",
-        {
-            "with_genres": genre_id,
-            "language": "en-US",
-            "sort_by": "popularity.desc",
-            "page": 1,
-        },
-    )
-    cards = await tmdb_cards_from_results(
-        discover.get("results", []), limit=genre_limit
-    )
-    genre_recs = [c for c in cards if c.tmdb_id != details.tmdb_id]
-
-# 👇 हे add कर
-if len(tfidf_items) == 0:
-    tfidf_items = [
-        TFIDFRecItem(
-            title=g.title,
-            score=1.0,
-            tmdb=g
+# 2) Genre recommendations
+    genre_recs: List[TMDBMovieCard] = []
+    if details.genres:
+        genre_id = details.genres[0]["id"]
+        discover = await tmdb_get(
+            "/discover/movie",
+            {
+                "with_genres": genre_id,
+                "language": "en-US",
+                "sort_by": "popularity.desc",
+                "page": 1,
+            },
         )
-        for g in genre_recs[:12]
-    ]
+        cards = await tmdb_cards_from_results(
+            discover.get("results", []), limit=genre_limit
+        )
+        genre_recs = [c for c in cards if c.tmdb_id != details.tmdb_id]
 
-return SearchBundleResponse(
-    query=query,
-    movie_details=details,
-    tfidf_recommendations=tfidf_items,
-    genre_recommendations=genre_recs,
-)
+    # TF-IDF fallback
+    if len(tfidf_items) == 0:
+        tfidf_items = [
+            TFIDFRecItem(title=g.title, score=1.0, tmdb=g)
+            for g in genre_recs[:12]
+        ]
+
+    return SearchBundleResponse(
+        query=query,
+        movie_details=details,
+        tfidf_recommendations=tfidf_items,
+        genre_recommendations=genre_recs,
+    )
